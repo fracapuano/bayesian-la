@@ -1,6 +1,7 @@
+import numpy as np
 import torch
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
 
 def get_mnist_dataloaders(batch_size=64, valid_split=0.1, num_workers=2, pin_memory=True):
     """Create train, validation, and test dataloaders for MNIST.
@@ -49,3 +50,17 @@ def get_mnist_dataloaders(batch_size=64, valid_split=0.1, num_workers=2, pin_mem
     )
     
     return train_loader, valid_loader, test_loader 
+
+
+def downsample(data_loader, batch_size=8, downsampling=None):
+
+    if downsampling is not None:
+        dataset = data_loader.dataset
+        subset_size = int(downsampling * len(dataset))  # Adjust percentage as needed 0.5 is okay
+        subset_indices = np.random.choice(len(dataset), subset_size, replace=False)
+        subset_dataset = Subset(dataset, subset_indices)
+        data_loader = DataLoader(
+            subset_dataset, batch_size=batch_size, shuffle=True
+        )
+
+    return data_loader

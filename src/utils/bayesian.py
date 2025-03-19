@@ -1,291 +1,340 @@
+import copy
+import gc
 import torch
 import numpy as np
-from laplace import Laplace
 from tqdm import tqdm
+from torch.nn import functional as F
+import wandb
+from utils.data import downsample
 
-class MCDropout:
-    """Monte Carlo Dropout for approximate Bayesian inference.
-    
-    This is a simple baseline Bayesian method that uses dropout at inference time
-    to approximate a Bayesian Neural Network.
-    
-    Reference:
-        Gal, Y., & Ghahramani, Z. (2016). Dropout as a bayesian approximation:
-        Representing model uncertainty in deep learning.
-    """
-    
-    def __init__(self, model, dropout_rate=0.1):
-        """Initialize MC Dropout wrapper.
-        
-        Args:
-            model: PyTorch model
-            dropout_rate: Dropout rate to use for uncertainty estimation
-        """
-        self.model = model
-        self.dropout_rate = dropout_rate
-        
-        # Enable dropout at inference time
-        def _enable_dropout(m):
-            if type(m) == torch.nn.Dropout:
-                m.train()
-        
-        self.model.eval()
-        self.model.apply(_enable_dropout)
-    
-    def predict(self, x, n_samples=20):
-        """Get predictive distribution.
-        
-        Args:
-            x: Input tensor
-            n_samples: Number of MC samples
-            
-        Returns:
-            mean: Mean of predictions
-            variance: Variance of predictions
-        """
-        self.model.eval()
-        samples = []
-        
-        with torch.no_grad():
-            for _ in range(n_samples):
-                output = self.model(x)
-                samples.append(torch.softmax(output, dim=1))
-        
-        samples = torch.stack(samples)  # [n_samples, batch_size, num_classes]
-        mean = samples.mean(dim=0)
-        variance = samples.var(dim=0)
-        
-        return mean, variance
-    
-    def evaluate(self, data_loader, device, n_samples=20):
-        """Evaluate model on data loader.
-        
-        Args:
-            data_loader: Data loader
-            device: Device to evaluate on
-            n_samples: Number of MC samples
-            
-        Returns:
-            accuracy, predictive_entropy
-        """
-        correct = 0
-        total = 0
-        all_entropies = []
-        
-        with tqdm(data_loader, desc="[MCDropout Eval]", leave=False) as pbar:
-            for data, target in pbar:
-                data, target = data.to(device), target.to(device)
-                
-                # Get predictions
-                mean, variance = self.predict(data, n_samples=n_samples)
-                
-                # Calculate accuracy
-                pred = mean.argmax(dim=1, keepdim=True)
-                correct += pred.eq(target.view_as(pred)).sum().item()
-                total += data.size(0)
-                
-                # Calculate entropy
-                entropy = -torch.sum(mean * torch.log(mean + 1e-10), dim=1)
-                all_entropies.append(entropy)
-                
-                pbar.set_postfix({'acc': 100. * correct / total})
-        
-        accuracy = 100. * correct / total
-        predictive_entropy = torch.cat(all_entropies).mean().item()
-        
-        return accuracy, predictive_entropy
 
-class LaplaceApproximation:
-    """Laplace Approximation using laplace-pytorch.
-    
-    Reference:
-        https://github.com/AlexImmer/Laplace
-    """
-    
-    def __init__(self, model, likelihood='classification'):
-        """Initialize Laplace wrapper.
-        
-        Args:
-            model: PyTorch model
-            likelihood: 'classification' or 'regression'
-        """
-        self.model = model
-        self.likelihood = likelihood
-        self.la = None  # Will be initialized after fitting
-    
-    def fit(self, train_loader, device, subset_of_weights='all', hessian_structure='diag'):
-        """Fit Laplace approximation.
-        
-        Args:
-            train_loader: Training data loader
-            device: Device to fit on
-            subset_of_weights: Which weights to consider for the Laplace approximation
-            hessian_structure: Structure of the Hessian approximation
-            
-        Returns:
-            self
-        """
-        self.la = Laplace(
-            model=self.model,
-            likelihood=self.likelihood,
-            subset_of_weights=subset_of_weights,
-            hessian_structure=hessian_structure
-        )
-        
-        # Convert data to list for Laplace
-        x_train, y_train = [], []
-        for data, target in tqdm(train_loader, desc="[Preparing Data for LA]"):
-            x_train.append(data.to(device))
-            y_train.append(target.to(device))
-        
-        # Fit Laplace approximation
-        self.la.fit(x_train, y_train)
-        
-        return self
-    
-    def predict(self, x, n_samples=20, link_approx='mc'):
-        """Get predictive distribution.
-        
-        Args:
-            x: Input tensor
-            n_samples: Number of samples for Monte Carlo approximation
-            link_approx: Link approximation method ('mc', 'probit', etc.)
-            
-        Returns:
-            pred_mean, pred_var
-        """
-        pred_mean, pred_var = self.la.predictive_samples(
-            x=x, n_samples=n_samples, link_approx=link_approx
-        )
-        return pred_mean, pred_var
-    
-    def evaluate(self, data_loader, device, n_samples=20, link_approx='mc'):
-        """Evaluate model on data loader.
-        
-        Args:
-            data_loader: Data loader
-            device: Device to evaluate on
-            n_samples: Number of samples
-            link_approx: Link approximation method
-            
-        Returns:
-            accuracy, predictive_entropy
-        """
-        correct = 0
-        total = 0
-        all_entropies = []
-        
-        with tqdm(data_loader, desc="[Laplace Eval]", leave=False) as pbar:
-            for data, target in pbar:
-                data, target = data.to(device), target.to(device)
-                
-                # Get predictions
-                pred_mean, pred_var = self.predict(data, n_samples=n_samples, link_approx=link_approx)
-                
-                # Calculate accuracy
-                pred = pred_mean.argmax(dim=1)
-                correct += pred.eq(target).sum().item()
-                total += data.size(0)
-                
-                # Calculate entropy (uncertainty)
-                entropy = -torch.sum(pred_mean * torch.log(pred_mean + 1e-10), dim=1)
-                all_entropies.append(entropy)
-                
-                pbar.set_postfix({'acc': 100. * correct / total})
-        
-        accuracy = 100. * correct / total
-        predictive_entropy = torch.cat(all_entropies).mean().item()
-        
-        return accuracy, predictive_entropy
+from models.bayesian_models import LaplaceApproximation, MCDropout
+
 
 def evaluate_posterior_quality(true_model, approx_model, data_loader, device, n_samples=20):
     """Compare approximated posterior with true posterior.
-    
+
     Args:
         true_model: True posterior model (usually MC Dropout as reference)
         approx_model: Approximated posterior model (Laplace)
         data_loader: Data loader
         device: Device to evaluate on
         n_samples: Number of samples
-        
+
     Returns:
         kl_divergence, js_divergence
     """
     all_kl_divs = []
     all_js_divs = []
-    
+
     with tqdm(data_loader, desc="[Posterior Quality]", leave=False) as pbar:
         for data, _ in pbar:
             data = data.to(device)
-            
+
             # Get true posterior
             true_mean, _ = true_model.predict(data, n_samples=n_samples)
-            
+
             # Get approximate posterior
             if isinstance(approx_model, LaplaceApproximation):
-                approx_mean, _ = approx_model.predict(data, n_samples=n_samples)
+                approx_mean = approx_model.predict(data, n_samples=n_samples)
             else:
-                approx_mean, _ = approx_model.predict(data, n_samples=n_samples)
-            
+                approx_mean = approx_model.predict(data, n_samples=n_samples)
+
             # Calculate KL divergence
             kl_div = torch.sum(true_mean * (torch.log(true_mean + 1e-10) - torch.log(approx_mean + 1e-10)), dim=1)
             all_kl_divs.append(kl_div)
-            
+
             # Calculate JS divergence
             m = 0.5 * (true_mean + approx_mean)
             js_div = 0.5 * torch.sum(true_mean * (torch.log(true_mean + 1e-10) - torch.log(m + 1e-10)), dim=1) + \
                     0.5 * torch.sum(approx_mean * (torch.log(approx_mean + 1e-10) - torch.log(m + 1e-10)), dim=1)
             all_js_divs.append(js_div)
-    
+
     avg_kl_div = torch.cat(all_kl_divs).mean().item()
     avg_js_div = torch.cat(all_js_divs).mean().item()
-    
+
     return avg_kl_div, avg_js_div
+
+
+def compute_posterior_quality(approx_model, data_loader, device, n_samples=20, n_bins=10):
+    """
+    Measures the quality of the approximate posterior in a multiclass MNIST classification task.
+
+    Computes:
+    - Negative Log-Likelihood (NLL)
+    - Expected Calibration Error (ECE)
+
+    Args:
+        approx_model: The approximate Bayesian neural network.
+        data_loader: DataLoader for the dataset.
+        device: The device (cuda or cpu) to run computations.
+        n_samples: Number of samples for Monte Carlo estimation.
+        n_bins: Number of bins for the ECE computation.
+
+    Returns:
+        nll (float): Negative Log-Likelihood of the approximate posterior.
+        ece (float): Expected Calibration Error.
+    """
+    
+    nll_total = 0
+    total_samples = 0
+    confidences = []
+    accuracies = []
+
+    with tqdm(data_loader, desc="[Posterior Quality]", leave=False) as pbar:
+        for data, target in pbar:
+            data, target = data.to(device), target.to(device)
+            total_samples += target.size(0)
+
+            # Get approximate posterior
+            if isinstance(approx_model, LaplaceApproximation):
+                pred_probs = approx_model.predict(data, n_samples=n_samples)
+            elif isinstance(approx_model, MCDropout):
+                pred_probs, _ = approx_model.predict(data, n_samples=n_samples)
+            else: 
+                logits = approx_model(data)
+                pred_probs = F.softmax(logits, dim=1)
+
+            # Compute Negative Log-Likelihood (NLL)
+            nll_total += F.nll_loss(torch.log(pred_probs), target, reduction='sum').item()
+
+            # Compute Expected Calibration Error (ECE)
+            pred_conf, pred_class = pred_probs.max(dim=1)  # Get max confidence & predicted class
+            correct = pred_class.eq(target).float()
+
+            confidences.extend(pred_conf.cpu().detach().numpy())
+            accuracies.extend(correct.cpu().detach().numpy())
+
+    # Compute final metrics
+    nll = nll_total / total_samples
+    ece = compute_ece(np.array(confidences), np.array(accuracies), n_bins)
+
+    return nll, ece
+
+
+def compute_ece(confidences, accuracies, n_bins=10):
+    """
+    Computes the Expected Calibration Error (ECE).
+    
+    Args:
+        confidences: Array of model confidences.
+        accuracies: Array of corresponding accuracy values.
+        n_bins: Number of bins for calibration.
+
+    Returns:
+        ece (float): Expected Calibration Error.
+    """
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    bin_lowers = bin_boundaries[:-1]
+    bin_uppers = bin_boundaries[1:]
+
+    ece = 0.0
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        in_bin = (confidences >= bin_lower) & (confidences < bin_upper)
+        prop_in_bin = np.mean(in_bin)
+
+        if prop_in_bin > 0:
+            acc_in_bin = np.mean(accuracies[in_bin])
+            conf_in_bin = np.mean(confidences[in_bin])
+            ece += np.abs(conf_in_bin - acc_in_bin) * prop_in_bin
+
+    return ece
+
 
 def measure_smoothness(model, data_loader, device, n_samples=100):
     """Measure the smoothness of the posterior landscape.
-    
+
     Args:
         model: Neural network model
         data_loader: Data loader
         device: Device to evaluate on
         n_samples: Number of random perturbations
-        
+
     Returns:
         avg_curvature: Average curvature measure
     """
     model.eval()
     all_curvatures = []
     epsilon = 1e-4  # Small perturbation
-    
+
     # Get a single batch
     for data, target in data_loader:
         data, target = data.to(device), target.to(device)
         break
-    
+
     with torch.no_grad():
         # Get original prediction
         original_output = model(data)
-        
+
         for _ in range(n_samples):
             # Create a perturbed version of the model
-            perturbed_model = type(model)(use_skip=model.use_skip)
+            perturbed_model = copy.deepcopy(model)
             perturbed_model.to(device)
-            perturbed_model.load_state_dict(model.state_dict())
-            
+
             # Add small random perturbation to parameters
             for param in perturbed_model.parameters():
                 param.data += epsilon * torch.randn_like(param)
-            
+
             # Get perturbed prediction
             perturbed_output = perturbed_model(data)
-            
+
             # Calculate Euclidean distance
             output_diff = (original_output - perturbed_output).pow(2).sum(dim=1).sqrt()
-            
+
             # Normalize by perturbation size
             curvature = output_diff.mean().item() / epsilon
             all_curvatures.append(curvature)
-    
+
+            del perturbed_model
+            gc.collect()
+            torch.cuda.empty_cache()
+
     avg_curvature = np.mean(all_curvatures)
-    return avg_curvature 
+    return avg_curvature
+
+
+
+
+
+def create_bayesian_models(models, train_loader, config, device, fit_downsampling=None):
+# --- Posterior Approximation Evaluation ---
+    print("\n--- Evaluating Posterior Approximations ---")
+    
+    # Create Bayesian models
+    bayesian_models = {}
+    for model_name, model in models.items():
+        print(f"\nProcessing {model_name} model:")
+        
+        # Create MC Dropout model (baseline)
+        print("Creating MC Dropout model...")
+        bayesian_models[f'{model_name}_mc_dropout'] = MCDropout(
+            model=model,
+            dropout_rate=config['dropout_rate']
+        )
+        
+        # Create Laplace Approximation model
+        print("Creating Laplace Approximation model...")
+        bayesian_models[f'{model_name}_laplace'] = LaplaceApproximation(
+            model=model,
+            likelihood='classification'
+        )
+
+        # Downsample for faster fit
+        train_loader = downsample(train_loader, downsampling=fit_downsampling)
+
+        # Fit Laplace approximation
+        print("Fitting Laplace approximation...")
+        bayesian_models[f'{model_name}_laplace'].fit(
+            train_loader=train_loader,
+            device=device,
+            subset_of_weights=config['subset_of_weights'],
+            hessian_structure=config['hessian_structure']
+        )
+
+    return bayesian_models
+
+
+def evaluate_models(models, bayesian_models, test_loader, config, device):
+    # Evaluate all models
+
+    results = {}
+    for model_name, model in bayesian_models.items():
+        print(f"\nEvaluating {model_name}...")
+        
+        # Evaluate on test set
+        accuracy, entropy = model.evaluate(
+            data_loader=test_loader,
+            device=device,
+            n_samples=config['n_samples']
+        )
+        
+        results[model_name] = {
+            'accuracy': accuracy,
+            'entropy': entropy
+        }
+        
+        # Log to wandb
+        wandb.log({
+            f'{model_name}/accuracy': accuracy,
+            f'{model_name}/entropy': entropy
+        })
+        
+        print(f"{model_name} - Accuracy: {accuracy:.2f}%, Entropy: {entropy:.4f}")
+
+    return results
+
+
+def evaluate_models_posterior_quality(models, bayesian_models, test_loader, config, device):
+    # --- Posterior Quality Comparison ---
+    print("\n--- Evaluating Posterior Quality ---")
+    results = {}
+
+    # Measure KL divergence between MC Dropout and Laplace
+    for model_name, model in models.items():
+        mc_model = bayesian_models[f'{model_name}_mc_dropout']
+        la_model = bayesian_models[f'{model_name}_laplace']
+
+        kl_div, js_div = evaluate_posterior_quality(
+            true_model=mc_model,
+            approx_model=la_model,
+            data_loader=test_loader,
+            device=device,
+            n_samples=config['n_samples']
+        )
+        map_nll, map_ece = compute_posterior_quality(model, test_loader, device)
+        la_nll, la_ece = compute_posterior_quality(la_model, test_loader, device)
+        mc_nll, mc_ece = compute_posterior_quality(mc_model, test_loader, device)
+
+        results[model_name] = {
+            'kl_div': kl_div,
+            'js_div': js_div,
+            'map_nll': map_nll,
+            'map_ece': map_ece,
+            'la_nll': la_nll,
+            'la_ece': la_ece,
+            'mc_nll': mc_nll,
+            'mc_ece': mc_ece
+        }
+
+        # Log to wandb
+        wandb.log({
+            f'{model_name}/kl_divergence': kl_div,
+            f'{model_name}/js_divergence': js_div,
+            f'{model_name}/map_nll': map_nll,
+            f'{model_name}/map_ece': map_ece,
+            f'{model_name}/la_nll': la_nll,
+            f'{model_name}/la_ece': la_ece,
+            f'{model_name}/mc_nll': mc_nll,
+            f'{model_name}/mc_ece': mc_ece
+        })
+
+        print(f"{model_name} - MAP NLL: {map_nll:.3f}, MAP ECE: {map_ece:.3f}, LA NLL: {la_nll:.3f}, LA ECE: {la_ece:.3f}, MC NLL: {mc_nll:.3f}, MC ECE: {mc_ece:.3f}, KL Div: {kl_div:.4f}, JS Div: {js_div:.4f}")
+
+    return results
+
+
+def evaluate_models_smoothness(models, test_loader, device, smoothness_n_samples=100):
+    # --- Loss Landscape Smoothness Analysis ---
+    print("\n--- Loss Landscape Smoothness Analysis ---")
+    results = {}
+    
+    smoothness = {}
+    for model_name, model in models.items():
+        smoothness[model_name] = measure_smoothness(
+            model=model,
+            data_loader=test_loader,
+            device=device,
+            n_samples=smoothness_n_samples
+        )
+        
+        # Log to wandb
+        wandb.log({
+            f'{model_name}/smoothness': smoothness[model_name]
+        })
+        
+        print(f"{model_name} Smoothness: {smoothness[model_name]:.6f}")
+        results[model_name] = {
+            'smoothness': smoothness[model_name]
+        }
+
+    return results

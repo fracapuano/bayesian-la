@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class BasicBlock(nn.Module):
     """Basic ResNet block with optional skip connection."""
     
@@ -33,6 +34,7 @@ class BasicBlock(nn.Module):
             
         out = F.relu(out)
         return out
+
 
 class ResNet5(nn.Module):
     """A minimal ResNet architecture to minimize computational overhead.
@@ -86,3 +88,176 @@ class ResNet5(nn.Module):
     @property
     def name(self):
         return f"ResNet5{'_Skip' if self.use_skip else '_NoSkip'}" 
+
+
+class ResNet3(nn.Module):
+    """A minimal ResNet architecture to minimize computational overhead.
+
+    This is essentially a small ResNet with 3 layers (1 residual blocks + input/output layers).
+    Can be configured with or without skip connections.
+    """
+
+    def __init__(self, num_classes=10, use_skip=True):
+        super(ResNet3, self).__init__()
+        self.use_skip = use_skip
+
+        # Initial convolution
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+
+        # Residual blocks
+        self.layer1 = BasicBlock(16, 64, stride=2, use_skip=use_skip)
+
+        # Final classification layer
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(64, num_classes)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+
+        x = self.layer1(x)
+
+        x = self.avg_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+    @property
+    def name(self):
+        return f"ResNet3{'_Skip' if self.use_skip else '_NoSkip'}"
+
+
+class ResNet10(nn.Module):
+    """A ResNet architecture with 10 layers (5 residual blocks + input/output layers)."""
+
+    def __init__(self, num_classes=10, use_skip=True):
+        super(ResNet10, self).__init__()
+        self.use_skip = use_skip
+
+        # Initial convolution
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+
+        # Residual blocks
+        self.layer1 = BasicBlock(16, 32, stride=2, use_skip=use_skip)
+        self.layer2 = BasicBlock(32, 32, stride=1, use_skip=use_skip)
+        self.layer3 = BasicBlock(32, 32, stride=1, use_skip=use_skip)
+        self.layer4 = BasicBlock(32, 32, stride=1, use_skip=use_skip)
+        self.layer5 = BasicBlock(32, 64, stride=2, use_skip=use_skip)
+
+        # Final classification layer
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(64, num_classes)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.layer5(x)
+
+        x = self.avg_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+    @property
+    def name(self):
+        return f"ResNet10{'_Skip' if self.use_skip else '_NoSkip'}"
+
+
+class ResNet20(nn.Module):
+    """A ResNet architecture with 20 layers (9 residual blocks + input/output layers)."""
+
+    def __init__(self, num_classes=10, use_skip=True):
+        super(ResNet20, self).__init__()
+        self.use_skip = use_skip
+
+        # Initial convolution
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
+
+        # Residual blocks
+        self.layer1 = BasicBlock(16, 16, stride=1, use_skip=use_skip)
+        self.layer2 = BasicBlock(16, 16, stride=1, use_skip=use_skip)
+        self.layer3 = BasicBlock(16, 32, stride=2, use_skip=use_skip)
+        self.layer4 = BasicBlock(32, 32, stride=1, use_skip=use_skip)
+        self.layer5 = BasicBlock(32, 32, stride=1, use_skip=use_skip)
+        self.layer6 = BasicBlock(32, 64, stride=2, use_skip=use_skip)
+        self.layer7 = BasicBlock(64, 64, stride=1, use_skip=use_skip)
+        self.layer8 = BasicBlock(64, 64, stride=1, use_skip=use_skip)
+        self.layer9 = BasicBlock(64, 128, stride=2, use_skip=use_skip)
+
+        # Final classification layer
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(128, num_classes)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        x = self.layer5(x)
+        x = self.layer6(x)
+        x = self.layer7(x)
+        x = self.layer8(x)
+        x = self.layer9(x)
+
+        x = self.avg_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+    @property
+    def name(self):
+        return f"ResNet20{'_Skip' if self.use_skip else '_NoSkip'}"
+

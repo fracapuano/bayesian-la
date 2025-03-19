@@ -13,7 +13,7 @@ import os
 import sys
 import argparse
 import torch
-from evaluation.experiment import run_experiment
+from experiment import experiment
 
 def parse_args():
     """Parse command line arguments."""
@@ -23,27 +23,28 @@ def parse_args():
     
     parser.add_argument('--dataset', type=str, default='mnist', 
                         help='Dataset to use (default: mnist)')
-    parser.add_argument('--batch-size', type=int, default=128, 
-                        help='Batch size for training (default: 128)')
+    parser.add_argument('--batch-size', type=int, default=512, 
+                        help='Batch size for training (default: 512)')
     parser.add_argument('--epochs', type=int, default=20, 
-                        help='Number of epochs to train (default: 20)')
+                        help='Number of epochs to train (default: 1)')
     parser.add_argument('--lr', type=float, default=1e-3, 
                         help='Learning rate (default: 1e-3)')
     parser.add_argument('--seed', type=int, default=42, 
                         help='Random seed (default: 42)')
-    parser.add_argument('--dropout-rate', type=float, default=0.1, 
-                        help='Dropout rate for MC Dropout (default: 0.1)')
+    parser.add_argument('--dropout-rate', type=float, default=0.2, 
+                        help='Dropout rate for MC Dropout (default: 0.2)')
     parser.add_argument('--n-samples', type=int, default=20, 
                         help='Number of Monte Carlo samples (default: 20)')
     parser.add_argument('--hessian-structure', type=str, default='diag', 
                         choices=['diag', 'kron', 'full'], 
                         help='Hessian structure for Laplace approximation (default: diag)')
-    parser.add_argument('--subset-of-weights', type=str, default='all', 
+    parser.add_argument('--subset-of-weights', type=str, default='last_layer', 
                         choices=['all', 'last_layer'], 
-                        help='Subset of weights for Laplace approximation (default: all)')
+                        help='Subset of weights for Laplace approximation (default: last_layer)')
     parser.add_argument('--no-cuda', action='store_true', 
                         help='Disable CUDA even if available')
-    
+    parser.add_argument('--test-downsampling', type=float, default=None, 
+                        help='Test downsampling to fast evaluation (default: None)')
     return parser.parse_args()
 
 def main():
@@ -65,11 +66,12 @@ def main():
         'n_samples': args.n_samples,
         'hessian_structure': args.hessian_structure,
         'subset_of_weights': args.subset_of_weights,
-        'device': str(device)
+        'device': str(device),
+        'test_downsampling': args.test_downsampling
     }
     
     # Run experiment
-    run_experiment(config)
+    experiment(config)
 
 if __name__ == "__main__":
     main() 
